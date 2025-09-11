@@ -1,0 +1,9 @@
+Posso criar uma func dentro do jogo.go:
+
+    faca_algo(jogo *Jogo){
+        for{
+            jogo.Mapa[10][15] = Inimigo
+            // surgir um inimigo ao interagir          
+
+        }
+    }
