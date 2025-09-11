@@ -51,18 +51,18 @@ loopPrincipal: // Rótulo para permitir a saída do loop de dentro do select. EN
 		select {
 
 		case evento := <-eventosTecladoCh:
-			// Chegou um evento do teclado.
+			// Trava o estado do jogo, executa a ação e o redesenho, e depois destrava.
+			jogo.Travar()
 			continuar := personagemExecutarAcao(evento, &jogo)
 			if !continuar {
-				// Se a ação do personagem retornar `false` (pressionou ESC), sai do loop.
+				jogo.Destravar() // Garante que destravamos antes de sair.
 				break loopPrincipal
 			}
-			// O estado mudou devido à ação do jogador, então redesenha o jogo.
 			interfaceDesenharJogo(&jogo)
+			jogo.Destravar()
 
 		case <-ticker.C:
-			// O ticker "pulsou". Este é o lugar onde a lógica de elementos autônomos (inimigos, etc.) será chamada no futuro.
-			// Por enquanto, não fazemos nada aqui, mas o caso é necessário para manter o jogo "vivo".
+			// No futuro, a lógica dos inimigos virá aqui, também dentro de um par Travar/Destravar.
 		}
 	}
 }
