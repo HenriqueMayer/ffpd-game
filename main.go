@@ -6,20 +6,35 @@ import (
 	"time"
 )
 
-// iniciarPatrulheiros varre o mapa, encontra todos os inimigos e inicia uma goroutine para cada um.
+// iniciarPatrulheiros (Existente)
 func iniciarPatrulheiros(jogo *Jogo) {
+	// ... (código sem alteração)
 	for y, linha := range jogo.Mapa {
 		for x, elem := range linha {
 			if elem.simbolo == Inimigo.simbolo {
-				// Cria um novo patrulheiro para este inimigo.
 				patrulheiro := &Patrulheiro{
-					x:              x,
-					y:              y,
-					dx:             1, // Começa movendo para a direita.
-					ultimoVisitado: Vazio, // Assume que o inimigo começa sobre uma célula vazia.
+					x: x, y: y, dx: 1, ultimoVisitado: Vazio,
 				}
-				// Inicia a goroutine que vai controlar este patrulheiro.
 				go rodarPatrulheiro(jogo, patrulheiro)
+			}
+		}
+	}
+}
+
+// iniciarArmadilhas (Nova)
+// Varre o mapa, encontra todas as armadilhas e inicia uma goroutine para cada uma.
+func iniciarArmadilhas(jogo *Jogo) {
+	for y, linha := range jogo.Mapa {
+		for x, elem := range linha {
+			if elem.simbolo == ArmadilhaArmada.simbolo {
+				// Cria uma nova armadilha para este local.
+				armadilha := &Armadilha{
+					x:      x,
+					y:      y,
+					armada: true, // Começa armada.
+				}
+				// Inicia a goroutine que vai controlar esta armadilha.
+				go rodarArmadilha(jogo, armadilha)
 			}
 		}
 	}
@@ -40,10 +55,11 @@ func main() {
 		panic(err)
 	}
 
-	// Inicia as goroutines para os patrulheiros após o mapa ser carregado.
+	// Inicia as goroutines para os elementos concorrentes.
 	iniciarPatrulheiros(&jogo)
+	iniciarArmadilhas(&jogo) // << NOVA CHAMADA AQUI
 
-	// --- CONFIGURAÇÃO DA CONCORRÊNCIA ---
+	// ... (resto do main sem alterações)
 	eventosTecladoCh := make(chan EventoTeclado)
 	go func() {
 		for {
@@ -51,16 +67,13 @@ func main() {
 		}
 	}()
 
-	ticker := time.NewTicker(100 * time.Millisecond) // Ticker principal para redesenho.
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-
-	// --- LOOP PRINCIPAL DO Jogo ---
 	interfaceDesenharJogo(&jogo)
 
 loopPrincipal:
 	for {
 		select {
-
 		case evento := <-eventosTecladoCh:
 			jogo.Travar()
 			continuar := personagemExecutarAcao(evento, &jogo)
@@ -68,13 +81,9 @@ loopPrincipal:
 				jogo.Destravar()
 				break loopPrincipal
 			}
-			// Redesenha imediatamente após a ação do jogador para resposta rápida.
 			interfaceDesenharJogo(&jogo)
 			jogo.Destravar()
-
 		case <-ticker.C:
-			// O ticker principal pulsa, então redesenhamos a tela para ver
-			// as mudanças feitas pelos patrulheiros em suas goroutines.
 			jogo.Travar()
 			interfaceDesenharJogo(&jogo)
 			jogo.Destravar()

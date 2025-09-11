@@ -1,39 +1,40 @@
-// jogo.go - Funções para manipular os elementos do jogo, como carregar o mapa e mover o personagem
+// jogo.go - Funções para manipular os elementos do jogo...
 package main
 
 import (
 	"bufio"
 	"os"
-	"time" // Adicionado para usar o time.Ticker na lógica do patrulheiro
+	"time"
 )
 
-// Elemento representa qualquer objeto do mapa (parede, personagem, vegetação, etc)
+// ... (structs Jogo e Elemento continuam aqui) ...
 type Elemento struct {
 	simbolo  rune
 	cor      Cor
 	corFundo Cor
-	tangivel bool // Indica se o elemento bloqueia passagem
+	tangivel bool
 }
-
-// Jogo contém o estado atual do jogo
 type Jogo struct {
-	Mapa           [][]Elemento // grade 2D representando o mapa
-	PosX, PosY     int          // posição atual do personagem
-	UltimoVisitado Elemento     // elemento que estava na posição do personagem antes de mover
-	StatusMsg      string       // mensagem para a barra de status
-	lock           chan struct{}  // Canal para controlar o acesso concorrente ao estado do jogo (exclusão mútua).
+	Mapa           [][]Elemento
+	PosX, PosY     int
+	UltimoVisitado Elemento
+	StatusMsg      string
+	lock           chan struct{}
 }
 
-// Elementos visuais do jogo
+
+// Adicionamos os novos elementos Armadilha
 var (
-	Personagem = Elemento{'☺', CorCinzaEscuro, CorPadrao, true}
-	Inimigo    = Elemento{'☠', CorVermelho, CorPadrao, true}
-	Parede     = Elemento{'▤', CorParede, CorFundoParede, true}
-	Vegetacao  = Elemento{'♣', CorVerde, CorPadrao, false}
-	Vazio      = Elemento{' ', CorPadrao, CorPadrao, false}
+	Personagem         = Elemento{'☺', CorCinzaEscuro, CorPadrao, true}
+	Inimigo            = Elemento{'☠', CorVermelho, CorPadrao, true}
+	Parede             = Elemento{'▤', CorParede, CorFundoParede, true}
+	Vegetacao          = Elemento{'♣', CorVerde, CorPadrao, false}
+	Vazio              = Elemento{' ', CorPadrao, CorPadrao, false}
+	ArmadilhaArmada    = Elemento{'*', CorVermelho, CorPadrao, false}   // Armadilha ligada, não bloqueia
+	ArmadilhaDesarmada = Elemento{'o', CorCinzaEscuro, CorPadrao, false} // Armadilha desligada, não bloqueia
 )
 
-// Cria e retorna uma nova instância do jogo
+// ... (funções jogoNovo, Travar, Destravar, etc. continuam aqui, sem alteração) ...
 func jogoNovo() Jogo {
 	j := Jogo{
 		UltimoVisitado: Vazio,
@@ -41,17 +42,9 @@ func jogoNovo() Jogo {
 	}
 	return j
 }
-
-// Travar adquire o lock de exclusão mútua do jogo.
-func (j *Jogo) Travar() {
-	j.lock <- struct{}{}
-}
-
-// Destravar libera o lock de exclusão mútua do jogo.
-func (j *Jogo) Destravar() {
-	<-j.lock
-}
-
+func (j *Jogo) Travar()    { j.lock <- struct{}{} }
+func (j *Jogo) Destravar() { <-j.lock }
+// ... (código existente) ...
 func jogoCarregarMapa(nome string, jogo *Jogo) error {
 	arq, err := os.Open(nome)
 	if err != nil {
@@ -74,6 +67,8 @@ func jogoCarregarMapa(nome string, jogo *Jogo) error {
 				e = Vegetacao
 			case Personagem.simbolo:
 				jogo.PosX, jogo.PosY = x, y
+			case ArmadilhaArmada.simbolo: // Reconhece o símbolo da armadilha no mapa
+				e = ArmadilhaArmada
 			}
 			linhaElems = append(linhaElems, e)
 		}
@@ -82,14 +77,13 @@ func jogoCarregarMapa(nome string, jogo *Jogo) error {
 	}
 	return scanner.Err()
 }
-
+// ... (código existente) ...
 func jogoPodeMoverPara(jogo *Jogo, x, y int) bool {
 	if y < 0 || y >= len(jogo.Mapa) || x < 0 || x >= len(jogo.Mapa[y]) {
 		return false
 	}
 	return !jogo.Mapa[y][x].tangivel
 }
-
 func jogoMoverElemento(jogo *Jogo, x, y, dx, dy int) {
 	nx, ny := x+dx, y+dy
 	elemento := jogo.Mapa[y][x]
@@ -98,36 +92,58 @@ func jogoMoverElemento(jogo *Jogo, x, y, dx, dy int) {
 	jogo.Mapa[ny][nx] = elemento
 }
 
-// --- LÓGICA DOS PATRULHEIROS ---
 
-// Patrulheiro define o estado de um inimigo que se move horizontalmente.
+// --- LÓGICA DOS PATRULHEIROS (Existente) ---
 type Patrulheiro struct {
-	x, y           int      // Posição atual no mapa.
-	dx             int      // Direção do movimento horizontal (-1 para esquerda, 1 para direita).
-	ultimoVisitado Elemento // O que estava na célula antes do patrulheiro ocupá-la.
+	x, y           int
+	dx             int
+	ultimoVisitado Elemento
+}
+func rodarPatrulheiro(jogo *Jogo, p *Patrulheiro) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		nx := p.x + p.dx
+		jogo.Travar()
+		if jogoPodeMoverPara(jogo, nx, p.y) {
+			jogo.Mapa[p.y][p.x] = p.ultimoVisitado
+			p.ultimoVisitado = jogo.Mapa[p.y][nx]
+			jogo.Mapa[p.y][nx] = Inimigo
+			p.x = nx
+		} else {
+			p.dx *= -1
+		}
+		jogo.Destravar()
+	}
 }
 
-// rodarPatrulheiro é a função principal para a goroutine de um único patrulheiro.
-func rodarPatrulheiro(jogo *Jogo, p *Patrulheiro) {
-	// Cada patrulheiro tem seu próprio ticker para decidir quando se mover.
-	ticker := time.NewTicker(500 * time.Millisecond)
+// --- LÓGICA DAS ARMADILHAS (Nova) ---
+
+// Armadilha define o estado de uma armadilha que pisca.
+type Armadilha struct {
+	x, y   int
+	armada bool
+}
+
+// rodarArmadilha é a função principal para a goroutine de uma armadilha.
+func rodarArmadilha(jogo *Jogo, a *Armadilha) {
+	// Ticker mais lento para a armadilha piscar a cada 1.5 segundos.
+	ticker := time.NewTicker(1500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		nx := p.x + p.dx // Calcula a próxima posição desejada.
+		jogo.Travar() // Trava o jogo para modificar o mapa.
 
-		jogo.Travar() // Trava o jogo para poder ler e modificar o mapa com segurança.
+		// Inverte o estado da armadilha.
+		a.armada = !a.armada
 
-		if jogoPodeMoverPara(jogo, nx, p.y) {
-			// Movimentação válida.
-			jogo.Mapa[p.y][p.x] = p.ultimoVisitado     // Restaura a posição antiga.
-			p.ultimoVisitado = jogo.Mapa[p.y][nx]      // Guarda o que está na nova posição.
-			jogo.Mapa[p.y][nx] = Inimigo               // Move o inimigo para a nova posição.
-			p.x = nx                                   // Atualiza a coordenada interna do patrulheiro.
+		// Atualiza o símbolo no mapa de acordo com o novo estado.
+		if a.armada {
+			jogo.Mapa[a.y][a.x] = ArmadilhaArmada
 		} else {
-			// Movimentação inválida (bateu numa parede), inverte a direção.
-			p.dx *= -1
+			jogo.Mapa[a.y][a.x] = ArmadilhaDesarmada
 		}
-		jogo.Destravar() // Destrava o jogo para outras goroutines.
+
+		jogo.Destravar() // Libera o jogo.
 	}
 }

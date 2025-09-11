@@ -7,23 +7,35 @@ import "fmt"
 func personagemMover(tecla rune, jogo *Jogo) {
 	dx, dy := 0, 0
 	switch tecla {
-	case 'w': dy = -1 // Move para cima
-	case 'a': dx = -1 // Move para a esquerda
-	case 's': dy = 1  // Move para baixo
-	case 'd': dx = 1  // Move para a direita
+	case 'w':
+		dy = -1 // Move para cima
+	case 'a':
+		dx = -1 // Move para a esquerda
+	case 's':
+		dy = 1 // Move para baixo
+	case 'd':
+		dx = 1 // Move para a direita
 	}
 
 	nx, ny := jogo.PosX+dx, jogo.PosY+dy
-	// Verifica se o movimento é permitido e realiza a movimentação
+	// Verifica se o movimento é permitido
 	if jogoPodeMoverPara(jogo, nx, ny) {
-		jogoMoverElemento(jogo, jogo.PosX, jogo.PosY, dx, dy)
+		// Restaura o elemento sobre o qual o personagem estava
+		jogo.Mapa[jogo.PosY][jogo.PosX] = jogo.UltimoVisitado
+		// Guarda o elemento para o qual o personagem vai se mover
+		jogo.UltimoVisitado = jogo.Mapa[ny][nx]
+		// Atualiza a posição do personagem
 		jogo.PosX, jogo.PosY = nx, ny
+
+		// --- NOVA LÓGICA DE INTERAÇÃO ---
+		// Verifica se o personagem pisou em uma armadilha armada.
+		if jogo.UltimoVisitado.simbolo == ArmadilhaArmada.simbolo {
+			jogo.StatusMsg = "Cuidado! Voce ativou uma armadilha!"
+		}
 	}
 }
 
 // Define o que ocorre quando o jogador pressiona a tecla de interação
-// Neste exemplo, apenas exibe uma mensagem de status
-// Você pode expandir essa função para incluir lógica de interação com objetos
 func personagemInteragir(jogo *Jogo) {
 	// Atualmente apenas exibe uma mensagem de status
 	jogo.StatusMsg = fmt.Sprintf("Interagindo em (%d, %d)", jogo.PosX, jogo.PosY)
@@ -33,14 +45,13 @@ func personagemInteragir(jogo *Jogo) {
 func personagemExecutarAcao(ev EventoTeclado, jogo *Jogo) bool {
 	switch ev.Tipo {
 	case "sair":
-		// Retorna false para indicar que o jogo deve terminar
 		return false
 	case "interagir":
-		// Executa a ação de interação
 		personagemInteragir(jogo)
 	case "mover":
-		// Move o personagem com base na tecla
+		// Limpa a mensagem de status antes de mover
+		jogo.StatusMsg = ""
 		personagemMover(ev.Tecla, jogo)
 	}
-	return true // Continua o jogo
+	return true
 }
