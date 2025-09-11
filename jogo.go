@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"os"
+	"time" // Adicionado para usar o time.Ticker na lógica do patrulheiro
 )
 
 // Elemento representa qualquer objeto do mapa (parede, personagem, vegetação, etc)
@@ -34,12 +35,9 @@ var (
 
 // Cria e retorna uma nova instância do jogo
 func jogoNovo() Jogo {
-	// O ultimo elemento visitado é inicializado como vazio
-	// pois o jogo começa com o personagem em uma posição vazia
 	j := Jogo{
 		UltimoVisitado: Vazio,
-		// Inicializa o canal de lock com um buffer de tamanho 1.
-		lock: make(chan struct{}, 1),
+		lock:           make(chan struct{}, 1),
 	}
 	return j
 }
@@ -54,14 +52,12 @@ func (j *Jogo) Destravar() {
 	<-j.lock
 }
 
-// Lê um arquivo texto linha por linha e constrói o mapa do jogo
 func jogoCarregarMapa(nome string, jogo *Jogo) error {
 	arq, err := os.Open(nome)
 	if err != nil {
 		return err
 	}
 	defer arq.Close()
-
 	scanner := bufio.NewScanner(arq)
 	y := 0
 	for scanner.Scan() {
@@ -77,48 +73,61 @@ func jogoCarregarMapa(nome string, jogo *Jogo) error {
 			case Vegetacao.simbolo:
 				e = Vegetacao
 			case Personagem.simbolo:
-				jogo.PosX, jogo.PosY = x, y // registra a posição inicial do personagem
+				jogo.PosX, jogo.PosY = x, y
 			}
 			linhaElems = append(linhaElems, e)
 		}
 		jogo.Mapa = append(jogo.Mapa, linhaElems)
 		y++
 	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	return nil
+	return scanner.Err()
 }
 
-// Verifica se o personagem pode se mover para a posição (x, y)
 func jogoPodeMoverPara(jogo *Jogo, x, y int) bool {
-	// Verifica se a coordenada Y está dentro dos limites verticais do mapa
-	if y < 0 || y >= len(jogo.Mapa) {
+	if y < 0 || y >= len(jogo.Mapa) || x < 0 || x >= len(jogo.Mapa[y]) {
 		return false
 	}
-
-	// Verifica se a coordenada X está dentro dos limites horizontais do mapa
-	if x < 0 || x >= len(jogo.Mapa[y]) {
-		return false
-	}
-
-	// Verifica se o elemento de destino é tangível (bloqueia passagem)
-	if jogo.Mapa[y][x].tangivel {
-		return false
-	}
-
-	// Pode mover para a posição
-	return true
+	return !jogo.Mapa[y][x].tangivel
 }
 
-// Move um elemento para a nova posição
 func jogoMoverElemento(jogo *Jogo, x, y, dx, dy int) {
 	nx, ny := x+dx, y+dy
+	elemento := jogo.Mapa[y][x]
+	jogo.Mapa[y][x] = jogo.UltimoVisitado
+	jogo.UltimoVisitado = jogo.Mapa[ny][nx]
+	jogo.Mapa[ny][nx] = elemento
+}
 
-	// Obtem elemento atual na posição
-	elemento := jogo.Mapa[y][x] // guarda o conteúdo atual da posição
+// --- LÓGICA DOS PATRULHEIROS ---
 
-	jogo.Mapa[y][x] = jogo.UltimoVisitado   // restaura o conteúdo anterior
-	jogo.UltimoVisitado = jogo.Mapa[ny][nx] // guarda o conteúdo atual da nova posição
-	jogo.Mapa[ny][nx] = elemento            // move o elemento
+// Patrulheiro define o estado de um inimigo que se move horizontalmente.
+type Patrulheiro struct {
+	x, y           int      // Posição atual no mapa.
+	dx             int      // Direção do movimento horizontal (-1 para esquerda, 1 para direita).
+	ultimoVisitado Elemento // O que estava na célula antes do patrulheiro ocupá-la.
+}
+
+// rodarPatrulheiro é a função principal para a goroutine de um único patrulheiro.
+func rodarPatrulheiro(jogo *Jogo, p *Patrulheiro) {
+	// Cada patrulheiro tem seu próprio ticker para decidir quando se mover.
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		nx := p.x + p.dx // Calcula a próxima posição desejada.
+
+		jogo.Travar() // Trava o jogo para poder ler e modificar o mapa com segurança.
+
+		if jogoPodeMoverPara(jogo, nx, p.y) {
+			// Movimentação válida.
+			jogo.Mapa[p.y][p.x] = p.ultimoVisitado     // Restaura a posição antiga.
+			p.ultimoVisitado = jogo.Mapa[p.y][nx]      // Guarda o que está na nova posição.
+			jogo.Mapa[p.y][nx] = Inimigo               // Move o inimigo para a nova posição.
+			p.x = nx                                   // Atualiza a coordenada interna do patrulheiro.
+		} else {
+			// Movimentação inválida (bateu numa parede), inverte a direção.
+			p.dx *= -1
+		}
+		jogo.Destravar() // Destrava o jogo para outras goroutines.
+	}
 }

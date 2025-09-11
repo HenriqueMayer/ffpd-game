@@ -1,5 +1,4 @@
 // main.go - Loop principal do jogo
-// O ponto de entrada do programa e o novo loop de jogo concorrente.
 package main
 
 import (
@@ -7,62 +6,78 @@ import (
 	"time"
 )
 
+// iniciarPatrulheiros varre o mapa, encontra todos os inimigos e inicia uma goroutine para cada um.
+func iniciarPatrulheiros(jogo *Jogo) {
+	for y, linha := range jogo.Mapa {
+		for x, elem := range linha {
+			if elem.simbolo == Inimigo.simbolo {
+				// Cria um novo patrulheiro para este inimigo.
+				patrulheiro := &Patrulheiro{
+					x:              x,
+					y:              y,
+					dx:             1, // Começa movendo para a direita.
+					ultimoVisitado: Vazio, // Assume que o inimigo começa sobre uma célula vazia.
+				}
+				// Inicia a goroutine que vai controlar este patrulheiro.
+				go rodarPatrulheiro(jogo, patrulheiro)
+			}
+		}
+	}
+}
+
 func main() {
 	// --- INICIALIZAÇÃO ---
-	// Inicializa a interface com o termbox.
 	interfaceIniciar()
 	defer interfaceFinalizar()
 
-	// Usa "mapa.txt" como arquivo padrão ou lê o primeiro argumento da linha de comando.
 	mapaFile := "mapa.txt"
 	if len(os.Args) > 1 {
 		mapaFile = os.Args[1]
 	}
 
-	// Inicializa o estado do jogo.
 	jogo := jogoNovo()
 	if err := jogoCarregarMapa(mapaFile, &jogo); err != nil {
 		panic(err)
 	}
 
-	// --- CONFIGURAÇÃO DA CONCORRÊNCIA ---
-	// Cria um canal para receber eventos do teclado.
-	eventosTecladoCh := make(chan EventoTeclado)
+	// Inicia as goroutines para os patrulheiros após o mapa ser carregado.
+	iniciarPatrulheiros(&jogo)
 
-	// Inicia uma goroutine separada para ler a entrada do teclado de forma contínua.
+	// --- CONFIGURAÇÃO DA CONCORRÊNCIA ---
+	eventosTecladoCh := make(chan EventoTeclado)
 	go func() {
 		for {
-			// A chamada `interfaceLerEventoTeclado()` é bloqueante. Ela roda aqui sem travar o loop principal.
 			eventosTecladoCh <- interfaceLerEventoTeclado()
 		}
 	}()
 
-	// Cria um ticker que envia um sinal a cada 200 milissegundos. Este é o "pulso" do jogo.
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond) // Ticker principal para redesenho.
 	defer ticker.Stop()
 
-	// --- LOOP PRINCIPAL DO JOGO ---
-	// Desenha o estado inicial do jogo antes de entrar no loop.
+	// --- LOOP PRINCIPAL DO Jogo ---
 	interfaceDesenharJogo(&jogo)
 
-loopPrincipal: // Rótulo para permitir a saída do loop de dentro do select. EN: Label to allow breaking the loop from within the select.
+loopPrincipal:
 	for {
-		// O `select` espera por uma mensagem em um dos canais. Ele processa o primeiro que chegar.
 		select {
 
 		case evento := <-eventosTecladoCh:
-			// Trava o estado do jogo, executa a ação e o redesenho, e depois destrava.
 			jogo.Travar()
 			continuar := personagemExecutarAcao(evento, &jogo)
 			if !continuar {
-				jogo.Destravar() // Garante que destravamos antes de sair.
+				jogo.Destravar()
 				break loopPrincipal
 			}
+			// Redesenha imediatamente após a ação do jogador para resposta rápida.
 			interfaceDesenharJogo(&jogo)
 			jogo.Destravar()
 
 		case <-ticker.C:
-			// No futuro, a lógica dos inimigos virá aqui, também dentro de um par Travar/Destravar.
+			// O ticker principal pulsa, então redesenhamos a tela para ver
+			// as mudanças feitas pelos patrulheiros em suas goroutines.
+			jogo.Travar()
+			interfaceDesenharJogo(&jogo)
+			jogo.Destravar()
 		}
 	}
 }
