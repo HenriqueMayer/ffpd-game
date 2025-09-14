@@ -1,4 +1,4 @@
-// main.go - Loop principal do jogo
+// main.go - Ponto de entrada e loop principal concorrente do jogo.
 package main
 
 import (
@@ -7,43 +7,36 @@ import (
 	"time"
 )
 
-// iniciarPatrulheiros foi atualizado para criar o canal de notificação e adicionar à lista do jogo.
 func iniciarPatrulheiros(jogo *Jogo) {
 	for y, linha := range jogo.Mapa {
 		for x, elem := range linha {
 			if elem.simbolo == Inimigo.simbolo {
 				patrulheiro := &Patrulheiro{
-					x:              x,
-					y:              y,
-					dx:             1,
-					ultimoVisitado: Vazio,
-					notificacaoCh:  make(chan Coords, 1), // Cria o canal (buffer de 1 para não bloquear).
-					alvo:           nil,
+					x: x, y: y, dx: 1, ultimoVisitado: Vazio,
+					notificacaoCh: make(chan Coords, 1), alvo: nil,
 				}
-				jogo.patrulheiros = append(jogo.patrulheiros, patrulheiro) // Adiciona à lista do jogo.
+				jogo.patrulheiros = append(jogo.patrulheiros, patrulheiro)
 				go rodarPatrulheiro(jogo, patrulheiro)
 			}
 		}
 	}
 }
 
-// ... (iniciarArmadilhas e outras funções continuam aqui) ...
-func iniciarArmadilhas(jogo *Jogo) {
+func iniciarPortais(jogo *Jogo) {
 	for y, linha := range jogo.Mapa {
 		for x, elem := range linha {
-			if elem.simbolo == ArmadilhaArmada.simbolo {
-				armadilha := &Armadilha{
-					x: x, y: y, armada: true,
+			if elem.simbolo == PortalFechado.simbolo {
+				portal := &Portal{
+					x: x, y: y, ativacaoCh: make(chan bool, 1),
 				}
-				go rodarArmadilha(jogo, armadilha)
+				jogo.portais = append(jogo.portais, portal)
+				go rodarPortal(jogo, portal)
 			}
 		}
 	}
 }
 
-
 func main() {
-	// ... (inicialização do jogo como antes) ...
 	interfaceIniciar()
 	defer interfaceFinalizar()
 
@@ -57,8 +50,9 @@ func main() {
 		panic(err)
 	}
 
+	// Inicia as goroutines para os elementos concorrentes (sem armadilhas).
 	iniciarPatrulheiros(&jogo)
-	iniciarArmadilhas(&jogo)
+	iniciarPortais(&jogo)
 
 	eventosTecladoCh := make(chan EventoTeclado)
 	go func() {
@@ -69,6 +63,7 @@ func main() {
 
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+
 	interfaceDesenharJogo(&jogo)
 
 loopPrincipal:
@@ -77,29 +72,33 @@ loopPrincipal:
 		case evento := <-eventosTecladoCh:
 			jogo.Travar()
 			continuar := personagemExecutarAcao(evento, &jogo)
-			if !continuar {
+			if !continuar || jogo.GameOver {
+				interfaceDesenharJogo(&jogo)
+				time.Sleep(2 * time.Second)
 				jogo.Destravar()
 				break loopPrincipal
 			}
+
 			interfaceDesenharJogo(&jogo)
 			jogo.Destravar()
 
 		case <-ticker.C:
 			jogo.Travar()
+			if jogo.GameOver {
+				interfaceDesenharJogo(&jogo)
+				time.Sleep(2 * time.Second)
+				jogo.Destravar()
+				break loopPrincipal
+			}
 
-			// --- LÓGICA DO RADAR (Nova) ---
-			// Raio de visão do inimigo.
+			// LÓGICA DO RADAR
 			const raioDeVisao = 8.0
 			for _, p := range jogo.patrulheiros {
-				// Calcula a distância euclidiana.
 				distancia := math.Sqrt(math.Pow(float64(p.x-jogo.PosX), 2) + math.Pow(float64(p.y-jogo.PosY), 2))
-
 				if distancia < raioDeVisao {
-					// JOGADOR ESTÁ PERTO: Envia as coordenadas do jogador para o canal do patrulheiro.
-					// Usamos um select para não bloquear caso o canal esteja cheio.
 					select {
 					case p.notificacaoCh <- Coords{jogo.PosX, jogo.PosY}:
-					default: // Se o canal estiver cheio, não faz nada e segue o jogo.
+					default:
 					}
 				}
 			}

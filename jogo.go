@@ -1,4 +1,4 @@
-// jogo.go - Funções para manipular os elementos do jogo...
+// jogo.go - Funções para manipular os elementos do jogo e a lógica dos atores concorrentes.
 package main
 
 import (
@@ -8,10 +8,7 @@ import (
 	"time"
 )
 
-// Coords é uma struct simples para representar coordenadas X, Y.
-type Coords struct {
-	x, y int
-}
+type Coords struct{ x, y int }
 
 type Elemento struct {
 	simbolo  rune
@@ -20,44 +17,49 @@ type Elemento struct {
 	tangivel bool
 }
 
-// Jogo contém o estado atual do jogo. Adicionamos uma lista de patrulheiros.
 type Jogo struct {
 	Mapa           [][]Elemento
 	PosX, PosY     int
 	UltimoVisitado Elemento
 	StatusMsg      string
 	lock           chan struct{}
-	patrulheiros   []*Patrulheiro // Lista de todos os patrulheiros ativos no jogo.
+	patrulheiros   []*Patrulheiro
+	portais        []*Portal
+	GameOver       bool
 }
 
+// Definição de todos os elementos visuais do jogo (Armadilha agora é estática).
 var (
-	Personagem         = Elemento{'☺', CorCinzaEscuro, CorPadrao, true}
-	Inimigo            = Elemento{'☠', CorVermelho, CorPadrao, true}
-	Parede             = Elemento{'▤', CorParede, CorFundoParede, true}
-	Vegetacao          = Elemento{'♣', CorVerde, CorPadrao, false}
-	Vazio              = Elemento{' ', CorPadrao, CorPadrao, false}
-	ArmadilhaArmada    = Elemento{'*', CorVermelho, CorPadrao, false}
-	ArmadilhaDesarmada = Elemento{'o', CorCinzaEscuro, CorPadrao, false}
+	Personagem     = Elemento{'☺', CorCinzaEscuro, CorPadrao, true}
+	Inimigo        = Elemento{'☠', CorVermelho, CorPadrao, true}
+	Parede         = Elemento{'▤', CorParede, CorFundoParede, true}
+	Vegetacao      = Elemento{'♣', CorVerde, CorPadrao, false}
+	Vazio          = Elemento{' ', CorPadrao, CorPadrao, false}
+	Armadilha      = Elemento{'*', CorVermelho, CorPadrao, false} // Armadilha estática, sempre armada.
+	PlacaDePressao = Elemento{'.', CorCinzaEscuro, CorPadrao, false}
+	PortalFechado  = Elemento{'⬱', CorVerde, CorPadrao, true}
+	PortalAberto   = Elemento{'O', CorVerde, CorPadrao, false}
 )
 
 func jogoNovo() Jogo {
 	j := Jogo{
 		UltimoVisitado: Vazio,
 		lock:           make(chan struct{}, 1),
-		patrulheiros:   make([]*Patrulheiro, 0), // Inicializa a lista de patrulheiros.
+		patrulheiros:   make([]*Patrulheiro, 0),
+		portais:        make([]*Portal, 0),
+		GameOver:       false,
 	}
 	return j
 }
+
 func (j *Jogo) Travar()    { j.lock <- struct{}{} }
 func (j *Jogo) Destravar() { <-j.lock }
 
-// ... (código existente como jogoCarregarMapa, jogoPodeMoverPara, etc. continua aqui) ...
 func jogoCarregarMapa(nome string, jogo *Jogo) error {
 	arq, err := os.Open(nome)
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	defer arq.Close()
+
 	scanner := bufio.NewScanner(arq)
 	y := 0
 	for scanner.Scan() {
@@ -66,16 +68,13 @@ func jogoCarregarMapa(nome string, jogo *Jogo) error {
 		for x, ch := range linha {
 			e := Vazio
 			switch ch {
-			case Parede.simbolo:
-				e = Parede
-			case Inimigo.simbolo:
-				e = Inimigo
-			case Vegetacao.simbolo:
-				e = Vegetacao
-			case Personagem.simbolo:
-				jogo.PosX, jogo.PosY = x, y
-			case ArmadilhaArmada.simbolo:
-				e = ArmadilhaArmada
+			case Parede.simbolo: e = Parede
+			case Inimigo.simbolo: e = Inimigo
+			case Vegetacao.simbolo: e = Vegetacao
+			case Personagem.simbolo: jogo.PosX, jogo.PosY = x, y
+			case Armadilha.simbolo: e = Armadilha // Reconhece a armadilha estática
+			case PlacaDePressao.simbolo: e = PlacaDePressao
+			case PortalFechado.simbolo: e = PortalFechado
 			}
 			linhaElems = append(linhaElems, e)
 		}
@@ -84,105 +83,78 @@ func jogoCarregarMapa(nome string, jogo *Jogo) error {
 	}
 	return scanner.Err()
 }
+
 func jogoPodeMoverPara(jogo *Jogo, x, y int) bool {
 	if y < 0 || y >= len(jogo.Mapa) || x < 0 || x >= len(jogo.Mapa[y]) {
 		return false
 	}
 	return !jogo.Mapa[y][x].tangivel
 }
-func jogoMoverElemento(jogo *Jogo, x, y, dx, dy int) {
-	nx, ny := x+dx, y+dy
-	elemento := jogo.Mapa[y][x]
-	jogo.Mapa[y][x] = jogo.UltimoVisitado
-	jogo.UltimoVisitado = jogo.Mapa[ny][nx]
-	jogo.Mapa[ny][nx] = elemento
-}
 
+// --- LÓGICA DOS PATRULHEIROS ---
 
-// --- LÓGICA DOS PATRULHEIROS (Atualizada) ---
-
-// Patrulheiro foi atualizado para incluir um canal de notificação e um estado de perseguição.
 type Patrulheiro struct {
 	x, y           int
 	dx             int
 	ultimoVisitado Elemento
-	notificacaoCh  chan Coords // Canal exclusivo para este patrulheiro receber alertas.
-	alvo           *Coords     // Ponteiro para as coordenadas do alvo. nil se não estiver perseguindo.
+	notificacaoCh  chan Coords
+	alvo           *Coords
 }
 
-// rodarPatrulheiro foi reescrito para usar 'select' e ter dois comportamentos.
 func rodarPatrulheiro(jogo *Jogo, p *Patrulheiro) {
 	tickerMovimento := time.NewTicker(500 * time.Millisecond)
 	defer tickerMovimento.Stop()
-
 	for {
 		select {
 		case alvoCoords := <-p.notificacaoCh:
-			// MENSAGEM RECEBIDA: O jogador está perto!
-			// Atualiza o alvo do patrulheiro com as novas coordenadas.
 			p.alvo = &alvoCoords
-
 		case <-tickerMovimento.C:
-			// HORA DE MOVER: Executa um passo de movimento.
 			if p.alvo == nil {
-				// MODO PATRULHA: Nenhum alvo definido, continua o movimento horizontal.
 				moverPatrulhando(jogo, p)
 			} else {
-				// MODO PERSEGUIÇÃO: Move-se em direção ao alvo.
 				moverPerseguindo(jogo, p)
 			}
 		}
 	}
 }
 
-// moverPatrulhando contém a lógica original de movimento horizontal.
 func moverPatrulhando(jogo *Jogo, p *Patrulheiro) {
-	nx := p.x + p.dx // Calcula a próxima posição de patrulha.
-
+	nx := p.x + p.dx
 	jogo.Travar()
+	if nx == jogo.PosX && p.y == jogo.PosY {
+		jogo.StatusMsg = "Voce foi pego por um inimigo! Fim de jogo."
+		jogo.GameOver = true
+		jogo.Destravar()
+		return
+	}
 	if jogoPodeMoverPara(jogo, nx, p.y) {
-		// Move o patrulheiro
 		jogo.Mapa[p.y][p.x] = p.ultimoVisitado
 		p.ultimoVisitado = jogo.Mapa[p.y][nx]
 		jogo.Mapa[p.y][nx] = Inimigo
 		p.x = nx
 	} else {
-		p.dx *= -1 // Bateu, inverte a direção
+		p.dx *= -1
 	}
 	jogo.Destravar()
 }
 
-// moverPerseguindo contém a nova lógica para se mover em direção a um alvo.
 func moverPerseguindo(jogo *Jogo, p *Patrulheiro) {
-	if p.x == p.alvo.x && p.y == p.alvo.y {
-		// Já alcançou o alvo, volta a patrulhar.
-		p.alvo = nil
-		return
-	}
-
-	// Lógica de movimento simples: tenta reduzir a maior distância primeiro (horizontal ou vertical).
+	if p.x == p.alvo.x && p.y == p.alvo.y { p.alvo = nil; return }
 	dx, dy := 0, 0
 	if math.Abs(float64(p.alvo.x-p.x)) > math.Abs(float64(p.alvo.y-p.y)) {
-		// Anda na horizontal
-		if p.alvo.x > p.x {
-			dx = 1
-		} else {
-			dx = -1
-		}
+		if p.alvo.x > p.x { dx = 1 } else { dx = -1 }
 	} else {
-		// Anda na vertical
-		if p.alvo.y > p.y {
-			dy = 1
-		} else {
-			dy = -1
-		}
+		if p.alvo.y > p.y { dy = 1 } else { dy = -1 }
 	}
-
 	nx, ny := p.x+dx, p.y+dy
-
 	jogo.Travar()
+	if nx == jogo.PosX && ny == jogo.PosY {
+		jogo.StatusMsg = "Voce foi pego por um inimigo! Fim de jogo."
+		jogo.GameOver = true
+		jogo.Destravar()
+		return
+	}
 	if jogoPodeMoverPara(jogo, nx, ny) {
-		// Move o patrulheiro
 		jogo.Mapa[p.y][p.x] = p.ultimoVisitado
 		p.ultimoVisitado = jogo.Mapa[ny][nx]
 		jogo.Mapa[ny][nx] = Inimigo
@@ -192,23 +164,25 @@ func moverPerseguindo(jogo *Jogo, p *Patrulheiro) {
 	jogo.Destravar()
 }
 
-// --- LÓGICA DAS ARMADILHAS (Existente) ---
-type Armadilha struct {
-	x, y   int
-	armada bool
+// --- LÓGICA DO PORTAL ---
+
+type Portal struct {
+	x, y       int
+	ativacaoCh chan bool
 }
 
-func rodarArmadilha(jogo *Jogo, a *Armadilha) {
-	ticker := time.NewTicker(1500 * time.Millisecond)
-	defer ticker.Stop()
-	for range ticker.C {
+func rodarPortal(jogo *Jogo, p *Portal) {
+	for range p.ativacaoCh {
 		jogo.Travar()
-		a.armada = !a.armada
-		if a.armada {
-			jogo.Mapa[a.y][a.x] = ArmadilhaArmada
-		} else {
-			jogo.Mapa[a.y][a.x] = ArmadilhaDesarmada
-		}
+		jogo.Mapa[p.y][p.x] = PortalAberto
 		jogo.Destravar()
+		select {
+		case <-time.After(5 * time.Second):
+			jogo.Travar()
+			if jogo.Mapa[p.y][p.x].simbolo == PortalAberto.simbolo {
+				jogo.Mapa[p.y][p.x] = PortalFechado
+			}
+			jogo.Destravar()
+		}
 	}
 }
